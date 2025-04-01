@@ -15,65 +15,12 @@
 #  limitations under the License.
 #
 #  partly based on work by Nokia Solutions and Networks Oyj
+
+# Help documentation from README.md:
 """A parallel executor for Robot Framework test cases.
 Version [PABOT_VERSION]
 
-Supports all Robot Framework command line options and also following
-options (these must be before normal RF options):
-
---verbose
-  more output
-
---command [ACTUAL COMMANDS TO START ROBOT EXECUTOR] --end-command
-  RF script for situations where pybot is not used directly
-
---processes [NUMBER OF PROCESSES]
-  How many parallel executors to use (default max of 2 and cpu count).
-  Special option "all" will use as many processes as there are
-  executable suites or tests.
-
---testlevelsplit
-  Split execution on test level instead of default suite level.
-  If .pabotsuitenames contains both tests and suites then this
-  will only affect new suites and split only them.
-  Leaving this flag out when both suites and tests in
-  .pabotsuitenames file will also only affect new suites and
-  add them as suite files.
-
---resourcefile [FILEPATH]
-  Indicator for a file that can contain shared variables for
-  distributing resources.
-
---pabotlib
-  Start PabotLib remote server. This enables locking and resource
-  distribution between parallel test executions.
-
---pabotlibhost [HOSTNAME]
-  Host name of the PabotLib remote server (default is 127.0.0.1)
-
---pabotlibport [PORT]
-  Port number of the PabotLib remote server (default is 8270)
-
---processtimeout [TIMEOUT]
-  Maximum time in seconds to wait for a process before killing it. If not set, there's no timeout.
-
---ordering [FILE PATH]
-  Optionally give execution order from a file.
-
---suitesfrom [FILEPATH TO OUTPUTXML]
-  Optionally read suites from output.xml file. Failed suites will run
-  first and longer running ones will be executed before shorter ones.
-
---argumentfile[INTEGER] [FILEPATH]
-  Run same suite with multiple argumentfile options.
-  For example "--argumentfile1 arg1.txt --argumentfile2 arg2.txt".
-
---shard [SHARD]/[SHARD COUNT]
-  Optionally split execution into smaller pieces. This can
-  be used for distributing testing to multiple machines.
-
---chunk
-  Optionally chunk tests to PROCESSES number of robot runs.
+PLACEHOLDER_README.MD
 
 Copyright 2022 Mikko Korpela - Apache 2 License
 """
@@ -144,6 +91,12 @@ try:
 except ImportError:
     from pipes import quote  # type: ignore
 
+try:
+    import importlib.metadata
+    METADATA_AVAILABLE = True
+except ImportError:
+    METADATA_AVAILABLE = False
+
 from typing import IO, Any, Dict, List, Optional, Tuple, Union
 
 CTRL_C_PRESSED = False
@@ -174,6 +127,78 @@ _ROBOT_EXTENSIONS = [
     ".robot",
 ]
 _ALL_ELAPSED = []  # type: List[Union[int, float]]
+
+# Python version check for supporting importlib.metadata (requires Python 3.8+)
+IS_PYTHON_3_8_OR_NEWER = sys.version_info >= (3, 8)
+
+
+def read_args_from_readme():
+    """Reads a specific section from package METADATA or development README.md if available."""
+
+    # 1. Try to read from METADATA (only if available and Python version is compatible)
+    metadata_section = read_from_metadata()
+    if metadata_section:
+        return f"Extracted from METADATA:\n\n{metadata_section}"
+
+    # 2. If METADATA is not available, fall back to development environment README.md
+    dev_readme_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "README.md"))
+    if os.path.exists(dev_readme_path):
+        with open(dev_readme_path, encoding="utf-8") as f:
+            lines = f.readlines()
+            help_args = extract_section(lines)
+            if help_args:
+                return f"Extracted from README.md ({dev_readme_path}):\n\n{help_args}"
+
+    if not IS_PYTHON_3_8_OR_NEWER:
+        return (
+            "Warning: Your Python version is too old and does not support importlib.metadata.\n"
+            "Please consider upgrading to Python 3.8 or newer for better compatibility.\n\n"
+            "To view any possible arguments, please kindly read the README.md here:\n"
+            "https://github.com/mkorpela/pabot"
+        )
+
+    return (
+        "Error: README.md or METADATA long_description not found.\n"
+        "If you believe this is an issue, please report it at:\n"
+        "https://github.com/mkorpela/pabot/issues"
+    )
+
+
+def read_from_metadata():
+    """Reads the long_description section from package METADATA if available."""
+    if not METADATA_AVAILABLE:
+        return None
+
+    try:
+        metadata = importlib.metadata.metadata("robotframework-pabot")
+        description = metadata.get("Description", "")
+
+        if not description:
+            return None
+
+        lines = description.splitlines(True)
+        return extract_section(lines)
+
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def extract_section(lines, start_marker="<!-- START DOCSTRING -->", end_marker="<!-- END DOCSTRING -->"):
+    """Extracts content between two markers in a list of lines."""
+    inside_section = False
+    extracted_lines = []
+
+    for line in lines:
+        if start_marker in line:
+            inside_section = True
+            continue
+        if end_marker in line:
+            break
+        if inside_section:
+            # Remove Markdown links but keep the text
+            extracted_lines.append(re.sub(r'\[([^\]]+)\]\(https?://[^\)]+\)', r'\1', line))
+
+    return "".join(extracted_lines).strip()
 
 
 class Color:
@@ -236,7 +261,7 @@ def execute_and_wait_with(item):
                 caller_id,
                 item.index,
                 item.execution_item.type != "test",
-                process_timeout=item.timeout
+                process_timeout=item.timeout,
             )
         outputxml_preprocessing(
             item.options, outs_dir, name, item.verbose, _make_id(), caller_id
@@ -294,7 +319,7 @@ def _try_execute_and_wait(
     caller_id,
     my_index=-1,
     show_stdout_on_failure=False,
-    process_timeout=None
+    process_timeout=None,
 ):
     # type: (List[str], str, str, bool, int, str, int, bool, Optional[int]) -> None
     plib = None
@@ -305,7 +330,15 @@ def _try_execute_and_wait(
         with open(os.path.join(outs_dir, cmd[0] + "_stdout.out"), "w") as stdout:
             with open(os.path.join(outs_dir, cmd[0] + "_stderr.out"), "w") as stderr:
                 process, (rc, elapsed) = _run(
-                    cmd, stderr, stdout, item_name, verbose, pool_id, my_index, outs_dir, process_timeout
+                    cmd,
+                    stderr,
+                    stdout,
+                    item_name,
+                    verbose,
+                    pool_id,
+                    my_index,
+                    outs_dir,
+                    process_timeout,
                 )
     except:
         _write(traceback.format_exc())
@@ -478,7 +511,17 @@ def _increase_completed(plib, my_index):
             )
 
 
-def _run(command, stderr, stdout, item_name, verbose, pool_id, item_index, outs_dir, process_timeout):
+def _run(
+    command,
+    stderr,
+    stdout,
+    item_name,
+    verbose,
+    pool_id,
+    item_index,
+    outs_dir,
+    process_timeout,
+):
     # type: (List[str], IO[Any], IO[Any], str, bool, int, int, str, Optional[int]) -> Tuple[Union[subprocess.Popen[bytes], subprocess.Popen], Tuple[int, float]]
     timestamp = datetime.datetime.now()
     cmd = " ".join(command)
@@ -487,10 +530,14 @@ def _run(command, stderr, stdout, item_name, verbose, pool_id, item_index, outs_
     # avoid hitting https://bugs.python.org/issue10394
     with POPEN_LOCK:
         my_env = os.environ.copy()
-        syslog_file = my_env.get('ROBOT_SYSLOG_FILE', None)
+        syslog_file = my_env.get("ROBOT_SYSLOG_FILE", None)
         if syslog_file:
-            my_env['ROBOT_SYSLOG_FILE'] = os.path.join(outs_dir, os.path.basename(syslog_file))
-        process = subprocess.Popen(cmd, shell=True, stderr=stderr, stdout=stdout, env=my_env)
+            my_env["ROBOT_SYSLOG_FILE"] = os.path.join(
+                outs_dir, os.path.basename(syslog_file)
+            )
+        process = subprocess.Popen(
+            cmd, shell=True, stderr=stderr, stdout=stdout, env=my_env
+        )
     if verbose:
         _write_with_id(
             process,
@@ -507,7 +554,9 @@ def _run(command, stderr, stdout, item_name, verbose, pool_id, item_index, outs_
             "EXECUTING %s" % item_name,
             timestamp=timestamp,
         )
-    return process, _wait_for_return_code(process, item_name, pool_id, item_index, process_timeout)
+    return process, _wait_for_return_code(
+        process, item_name, pool_id, item_index, process_timeout
+    )
 
 
 def _wait_for_return_code(process, item_name, pool_id, item_index, process_timeout):
@@ -522,12 +571,15 @@ def _wait_for_return_code(process, item_name, pool_id, item_index, process_timeo
         if process_timeout and elapsed / 10.0 >= process_timeout:
             process.terminate()
             process.wait()
-            rc = -1  # Set a return code indicating that the process was killed due to timeout
+            rc = (
+                -1
+            )  # Set a return code indicating that the process was killed due to timeout
             _write_with_id(
                 process,
                 pool_id,
                 item_index,
-                "Process %s killed due to exceeding the maximum timeout of %s seconds" % (item_name, process_timeout),
+                "Process %s killed due to exceeding the maximum timeout of %s seconds"
+                % (item_name, process_timeout),
             )
             break
 
@@ -542,7 +594,6 @@ def _wait_for_return_code(process, item_name, pool_id, item_index, process_timeo
             )
 
     return rc, elapsed / 10.0
-
 
 
 def _read_file(file_handle):
@@ -846,6 +897,8 @@ def solve_shard_suites(suite_names, pabot_args):
 
 
 def solve_suite_names(outs_dir, datasources, options, pabot_args):
+    if pabot_args.get("pabotprerunmodifier"):
+        options['prerunmodifier'].append(pabot_args['pabotprerunmodifier'])
     h = Hashes(
         dirs=get_hash_of_dirs(datasources),
         cmd=get_hash_of_command(options, pabot_args),
@@ -881,7 +934,7 @@ def solve_suite_names(outs_dir, datasources, options, pabot_args):
                 for l in lines[4:]
             )
             execution_item_lines = [parse_execution_item_line(l) for l in lines[4:]]
-            if corrupted or h != file_h or file_hash != hash_of_file:
+            if corrupted or h != file_h or file_hash != hash_of_file or pabot_args.get("pabotprerunmodifier"):
                 return _regenerate(
                     file_h,
                     h,
@@ -1121,7 +1174,6 @@ def store_suite_names(hashes, suite_names):
                 for d in suite_lines
             )
     except IOError:
-
         _write(
             "[ "
             + _wrap_with(Color.YELLOW, "WARNING")
@@ -1154,21 +1206,26 @@ def generate_suite_names_with_builder(outs_dir, datasources, options):
     # Note: first argument (included_suites) is deprecated from RobotFramework 6.1
     if ROBOT_VERSION >= "6.1":
         builder = TestSuiteBuilder(
-            included_extensions=settings.extension, rpa=settings.rpa, lang=opts.get("language")
+            included_extensions=settings.extension,
+            rpa=settings.rpa,
+            lang=opts.get("language"),
         )
     else:
         builder = TestSuiteBuilder(
             settings["SuiteNames"], settings.extension, rpa=settings.rpa
-        ) 
+        )
 
     suite = builder.build(*datasources)
-    settings.rpa = builder.rpa
-    suite.configure(**settings.suite_config)
+
     if settings.pre_run_modifiers:
         _write.error = _write.warn = _write.info = _write.debug = _write.trace = _write
         suite.visit(
             ModelModifier(settings.pre_run_modifiers, settings.run_empty_suite, _write)
         )
+
+    settings.rpa = builder.rpa
+    suite.configure(**settings.suite_config)
+
     all_suites = (
         get_all_suites_from_main_suite(suite.suites) if suite.suites else [suite]
     )
@@ -1657,7 +1714,7 @@ class QueueItem(object):
         argfile,
         hive=None,
         processes=0,
-        timeout=None
+        timeout=None,
     ):
         # type: (List[str], str, Dict[str, object], ExecutionItem, List[str], bool, Tuple[str, Optional[str]], Optional[str], int, Optional[int]) -> None
         self.datasources = datasources
@@ -1755,7 +1812,7 @@ def _create_items(datasources, opts_for_run, outs_dir, pabot_args, suite_group):
             argfile,
             pabot_args.get("hive"),
             pabot_args["processes"],
-            pabot_args["processtimeout"]
+            pabot_args["processtimeout"],
         )
         for suite in suite_group
         for argfile in pabot_args["argumentfiles"] or [("", None)]
@@ -1774,9 +1831,7 @@ def _create_execution_items_for_dry_run(
             datasources, opts_for_run, outs_dir, pabot_args, suite_group
         )
         chunk_size = (
-            round(len(items) / processes_count)
-            if len(items) > processes_count
-            else 1
+            round(len(items) / processes_count) if len(items) > processes_count else 1
         )
         chunked_items = list(_chunk_items(items, chunk_size))
         _NUMBER_OF_ITEMS_TO_BE_EXECUTED += len(chunked_items)
@@ -1800,7 +1855,7 @@ def _chunk_items(items, chunk_size):
             base_item.verbose,
             (base_item.argfile_index, base_item.argfile),
             processes=base_item.processes,
-            timeout=base_item.timeout
+            timeout=base_item.timeout,
         )
         yield chunked_item
 
@@ -1880,7 +1935,7 @@ def _get_dynamically_created_execution_items(
             ("", None),
             pabot_args.get("hive"),
             pabot_args["processes"],
-            pabot_args["processtimeout"]
+            pabot_args["processtimeout"],
         )
         for suite in suite_group
     ]
@@ -1913,7 +1968,11 @@ def main_program(args):
         _start_message_writer()
         options, datasources, pabot_args, opts_for_run = parse_args(args)
         if pabot_args["help"]:
-            print(__doc__.replace("[PABOT_VERSION]", PABOT_VERSION))
+            help_print = __doc__.replace(
+                "PLACEHOLDER_README.MD",
+                read_args_from_readme()
+                )
+            print(help_print.replace("[PABOT_VERSION]", PABOT_VERSION))
             return 0
         if len(datasources) == 0:
             print("[ " + _wrap_with(Color.RED, "ERROR") + " ]: No datasources given.")
@@ -1952,7 +2011,8 @@ def main_program(args):
         )
         return result_code if not _ABNORMAL_EXIT_HAPPENED else 252
     except Information as i:
-        print(__doc__.replace("[PABOT_VERSION]", PABOT_VERSION))
+        version_print = __doc__.replace("\nPLACEHOLDER_README.MD\n", "")
+        print(version_print.replace("[PABOT_VERSION]", PABOT_VERSION))
         print(i.message)
     except DataError as err:
         print(err.message)
@@ -1974,15 +2034,29 @@ def main_program(args):
         _stop_message_writer()
 
 
+def _parse_ordering(filename):  # type: (str) -> List[ExecutionItem]
+    try:
+        with open(filename, "r") as orderingfile:
+            return [
+                parse_execution_item_line(line.strip())
+                for line in orderingfile.readlines()
+            ]
+    except FileNotFoundError:
+        raise DataError("Error: File '%s' not found." % filename)
+    except:
+        raise DataError("Error parsing ordering file '%s'" % filename)
+
+
 def _group_suites(outs_dir, datasources, options, pabot_args):
     suite_names = solve_suite_names(outs_dir, datasources, options, pabot_args)
     _verify_depends(suite_names)
-    ordered_suites = _preserve_order(suite_names, pabot_args.get("ordering"))
+    ordering_arg = _parse_ordering(pabot_args.get("ordering")) if (pabot_args.get("ordering")) is not None else None
+    ordered_suites = _preserve_order(suite_names, ordering_arg)
     shard_suites = solve_shard_suites(ordered_suites, pabot_args)
     grouped_suites = (
         _chunked_suite_names(shard_suites, pabot_args["processes"])
         if pabot_args["chunk"]
-        else _group_by_wait(_group_by_groups(ordered_suites))
+        else _group_by_wait(_group_by_groups(shard_suites))
     )
     grouped_by_depend = _all_grouped_suites_by_depend(grouped_suites)
     return grouped_by_depend
@@ -2019,17 +2093,23 @@ def _verify_depends(suite_names):
         )
     )
     if suites_with_depends != suites_with_found_dependencies:
-        raise Exception("There are unmet dependencies using #DEPENDS")
+        raise DataError(
+            "Invalid test configuration: Some test suites have dependencies (#DEPENDS) that cannot be found."
+        )
     suites_with_circular_dependencies = list(
         filter(lambda suite: suite.depends == suite.name, suites_with_depends)
     )
     if suites_with_circular_dependencies:
-        raise Exception("There are suites with circular dependencies using #DEPENDS")
+        raise DataError(
+            "Invalid test configuration: Test suites cannot depend on themselves."
+        )
     grouped_suites = list(
         filter(lambda suite: isinstance(suite, GroupItem), suite_names)
     )
     if grouped_suites and suites_with_depends:
-        raise Exception("#DEPENDS and grouped suites are incompatible")
+        raise DataError(
+            "Invalid test configuration: Cannot use both #DEPENDS and grouped suites."
+        )
 
 
 def _group_by_depend(suite_names):
@@ -2041,23 +2121,32 @@ def _group_by_depend(suite_names):
         return [suite_names]
     independent_tests = list(filter(lambda suite: not suite.depends, runnable_suites))
     dependency_tree = [independent_tests]
-    while True:
-        dependent_tests = list(filter(lambda suite: suite.depends, runnable_suites))
-        dependent_on_last_stage = list(
-            filter(
-                lambda suite: any(
-                    test_in_tier_before.name == suite.depends
-                    for test_in_tier_before in dependency_tree[-1]
-                ),
-                dependent_tests,
-            )
-        )
-        if not dependent_on_last_stage:
-            break
-        dependency_tree += [dependent_on_last_stage]
+    dependent_tests = list(filter(lambda suite: suite.depends, runnable_suites))
+    unknown_dependent_tests = dependent_tests
+    while len(unknown_dependent_tests) > 0:
+        run_in_this_stage, run_later = [], []
+        for d in unknown_dependent_tests:
+            stage_indexes = []
+            for i, stage in enumerate(dependency_tree):
+                for test in stage:
+                    if test.name in d.depends:
+                        stage_indexes.append(i)
+            # All #DEPENDS test are already run:
+            if len(stage_indexes) == len(d.depends):
+                run_in_this_stage.append(d)
+            else:
+                run_later.append(d)
+        unknown_dependent_tests = run_later
+        if len(run_in_this_stage) == 0:
+            text = "There are circular or unmet dependencies using #DEPENDS. Check this/these test(s): " + str(run_later)
+            raise DataError(text)
+        else:
+            dependency_tree.append(run_in_this_stage)
     flattened_dependency_tree = sum(dependency_tree, [])
     if len(flattened_dependency_tree) != len(runnable_suites):
-        raise Exception("There are circular or unmet dependencies using #DEPENDS")
+        raise DataError(
+            "Invalid test configuration: Circular or unmet dependencies detected between test suites. Please check your #DEPENDS definitions."
+        )
     return dependency_tree
 
 

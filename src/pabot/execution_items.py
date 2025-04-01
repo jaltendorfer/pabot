@@ -5,10 +5,10 @@ from robot import __version__ as ROBOT_VERSION
 from robot.errors import DataError
 from robot.utils import PY2, is_unicode
 
+import re
 
 @total_ordering
 class ExecutionItem(object):
-
     isWait = False
     type = None  # type: str
     name = None  # type: str
@@ -51,7 +51,6 @@ class ExecutionItem(object):
 
 
 class HivedItem(ExecutionItem):
-
     type = "hived"
 
     def __init__(self, item, hive):
@@ -67,7 +66,6 @@ class HivedItem(ExecutionItem):
 
 
 class GroupItem(ExecutionItem):
-
     type = "group"
 
     def __init__(self):
@@ -99,20 +97,31 @@ class GroupItem(ExecutionItem):
 class RunnableItem(ExecutionItem):
     pass
 
-    depends = None  # type: str
+    depends = None  # type: List[str]
     depends_keyword = "#DEPENDS"
+
+    def _split_dependencies(self, line_name, depends_indexes):
+        depends_lst = [] if len(depends_indexes) < 2 else [line_name[i + len(self.depends_keyword) : j].strip() for i, j in zip(depends_indexes, depends_indexes[1:])]
+        depends_lst.append(line_name[depends_indexes[-1] + len(self.depends_keyword) : ].strip())
+        return depends_lst
+
+    def _merge_dependencies(self, line_start):
+        output_line = line_start
+        for d in self.depends:
+            output_line = output_line + " " + self.depends_keyword + " " + d
+        return output_line
 
     def set_name_and_depends(self, name):
         line_name = name.encode("utf-8") if PY2 and is_unicode(name) else name
-        depends_begin_index = line_name.find(self.depends_keyword)
+        depends_indexes = [d.start() for d in re.finditer(self.depends_keyword, line_name)]
         self.name = (
             line_name
-            if depends_begin_index == -1
-            else line_name[0:depends_begin_index].strip()
+            if len(depends_indexes) == 0
+            else line_name[0:depends_indexes[0]].strip()
         )
         self.depends = (
-            line_name[depends_begin_index + len(self.depends_keyword) :].strip()
-            if depends_begin_index != -1
+            self._split_dependencies(line_name, depends_indexes)
+            if len(depends_indexes) != 0
             else None
         )
 
@@ -120,14 +129,13 @@ class RunnableItem(ExecutionItem):
         # type: () -> str
         line_without_depends = "--" + self.type + " " + self.name
         return (
-            line_without_depends + " " + self.depends_keyword + " " + self.depends
+            self._merge_dependencies(line_without_depends)
             if self.depends
             else line_without_depends
         )
 
 
 class SuiteItem(RunnableItem):
-
     type = "suite"
 
     def __init__(self, name, tests=None, suites=None, dynamictests=None):
@@ -162,9 +170,9 @@ class SuiteItem(RunnableItem):
             return False
         if self.name == other.name:
             return True
-        if other.name.endswith('.'+self.name):
+        if other.name.endswith("." + self.name):
             return True
-        if self.name.endswith('.'+other.name):
+        if self.name.endswith("." + other.name):
             return True
         return False
 
@@ -177,7 +185,6 @@ class SuiteItem(RunnableItem):
 
 
 class TestItem(RunnableItem):
-
     type = "test"
 
     def __init__(self, name):
@@ -228,7 +235,6 @@ class DynamicSuiteItem(SuiteItem):
 
 
 class DynamicTestItem(ExecutionItem):
-
     type = "dynamictest"
 
     def __init__(self, name, suite):
@@ -257,7 +263,6 @@ class DynamicTestItem(ExecutionItem):
 
 
 class WaitItem(ExecutionItem):
-
     type = "wait"
     isWait = True
 
@@ -269,7 +274,6 @@ class WaitItem(ExecutionItem):
 
 
 class GroupStartItem(ExecutionItem):
-
     type = "group"
 
     def __init__(self):
@@ -280,7 +284,6 @@ class GroupStartItem(ExecutionItem):
 
 
 class GroupEndItem(ExecutionItem):
-
     type = "group"
 
     def __init__(self):
@@ -291,7 +294,6 @@ class GroupEndItem(ExecutionItem):
 
 
 class IncludeItem(ExecutionItem):
-
     type = "include"
 
     def __init__(self, tag):
@@ -308,7 +310,6 @@ class IncludeItem(ExecutionItem):
 
 
 class SuiteItems(ExecutionItem):
-
     type = "suite"
 
     def __init__(self, suites):
